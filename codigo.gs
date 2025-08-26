@@ -10,7 +10,7 @@
  *  - COINGECKO (coins/markets)
  *  - INVESTING (HTML scraping robusto)
  *      · Identificador preferido = ISIN si está disponible (fondos/ETFs/bonos)
- *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities …)
+ *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities > indices > currencies > crypto > certificates)
  *      · Detección de DIVISA contextual al precio (evita falsos USD)
  *  - GOOGLEFINANCE (página pública de Google Finance)
  *
@@ -335,7 +335,7 @@ function _investingPickBestLinkByIsin(html, isin, hint) {
 
   const SECTION_PRIORITY = {
     "funds": 90, "etfs": 80, "bonds": 70, "equities": 60,
-    "indices": 40, "currencies": 30, "crypto": 20, "certificates": 50
+    "indices": 40, "currencies": 30, "crypto": 20, "certificates": 10
   };
 
   function score(c) {
