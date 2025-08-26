@@ -16,6 +16,7 @@
  *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities …)
  *      · Detección de DIVISA contextual al precio (evita falsos USD)
  *  - GOOGLEFINANCE (página pública de Google Finance)
+ *  - QUEFONDOS (fondos y planes, HTML)
  *
  * Enrutadores:
  *  - resolveQuote(source, identifier, currency)
@@ -799,9 +800,10 @@ function resolveQuote(source, identifier, currency) {
 }
 
 /**
- * Búsqueda por ISIN:
- *  - strictFunds = true → consulta Investing directamente (prioriza “funds”)
- *  - strictFunds = false/omitido → intenta Yahoo y, si no es usable, Investing con ranking
+ * Búsqueda por ISIN con estrategia de "fallback" entre fuentes:
+ *  - strictFunds = true → consulta Investing directamente (prioriza "funds")
+ *  - strictFunds = false/omitido → intenta Investing y, si falta información, recurre a
+ *    Quefondos, y, solo para no-fondos, Yahoo y Google.
  *  - Si "hint" es una URL de Investing, se usa directamente (atajo para mapeos específicos)
  *
  * @param {string}  isin        Código ISIN (ej.: "FR00140081Y1")
@@ -833,11 +835,31 @@ function resolveQuoteByIsin(isin, hint, strictFunds) {
         return rowQF;
       }
     }
+    // Si sigue sin datos válidos, recurrir a Morningstar
+    if (!rowStrict || !rowStrict[0] || rowStrict[0][2] === "" || rowStrict[0][3] === "") {
+      var rowMsF = getMorningstarQuote(code);
+      if (rowMsF && rowMsF[0] && rowMsF[0][2] !== "" && rowMsF[0][3] !== "") {
+        _setCache(key, rowMsF, 300);
+        return rowMsF;
+      }
+    }
     _setCache(key, rowStrict, 300);
     return rowStrict;
   }
+  // 1) INVESTING (con ranking por secciones)
+  var rowInv = _resolveIsinViaInvesting_(code, hintStr);
+  if (rowInv && rowInv[0] && rowInv[0][2] !== "" && rowInv[0][3] !== "") {
+    _setCache(key, rowInv, 300);
+    return rowInv;
+  }
 
-  // 1) YAHOO: aceptamos solo si devuelve precio y divisa
+  // 2) QUEFONDOS
+  var rowQ = getQuefondosQuote(code);
+  if (rowQ && rowQ[0] && rowQ[0][2] !== "" && rowQ[0][3] !== "") {
+    _setCache(key, rowQ, 300);
+    return rowQ;
+  }
+  // 3) YAHOO (solo para no-fondos)
   try {
     var y = _yahooSearch(code);
     if (y && y.quotes && y.quotes.length) {
@@ -845,7 +867,6 @@ function resolveQuoteByIsin(isin, hint, strictFunds) {
         var t = String(q.quoteType || "").toUpperCase();
         return ["FUTURE", "OPTION", "INDEX", "CURRENCY"].indexOf(t) === -1;
       }) || y.quotes[0];
-
       if (hit && hit.symbol) {
         var rowY = getYahooQuote(hit.symbol);
         if (rowY && rowY[0] && rowY[0][2] !== "" && rowY[0][3] !== "") {
@@ -858,21 +879,17 @@ function resolveQuoteByIsin(isin, hint, strictFunds) {
     // Continuar con otras fuentes si Yahoo falla
   }
 
-  // 2) INVESTING (con tu lógica de ranking por secciones)
-  var rowInv = _resolveIsinViaInvesting_(code, hintStr);
-  if (!rowInv || !rowInv[0] || rowInv[0][2] === "" || rowInv[0][3] === "") {
-    // 3) QUEFONDOS (fallback cuando Investing no aporta precio/divisa)
-    var rowQ = getQuefondosQuote(code);
-    if (rowQ && rowQ[0] && rowQ[0][2] !== "" && rowQ[0][3] !== "") {
-      _setCache(key, rowQ, 300);
-      return rowQ;
-    }
+  // 4) GOOGLE FINANCE (como último recurso para no-fondos)
+  var rowG = getGoogleFinanceQuote(code);
+  if (rowG && rowG[0] && rowG[0][2] !== "" && rowG[0][3] !== "") {
+    _setCache(key, rowG, 300);
+    return rowG;
   }
 
+  // Si ninguna fuente proporciona datos completos, devolver lo que haya en Investing
   _setCache(key, rowInv, 300);
   return rowInv;
 }
-
 
 /**
  * Resolución auxiliar por ISIN usando Investing con ranking por sección.
