@@ -16,6 +16,8 @@
  *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities …)
  *      · Detección de DIVISA contextual al precio (evita falsos USD)
  *  - GOOGLEFINANCE (página pública de Google Finance)
+ *  - QUEFONDOS (fondos y planes, HTML)
+ *  - MORNINGSTAR (acciones, fondos y ETFs)
  *
  * Enrutadores:
  *  - resolveQuote(source, identifier, currency)
@@ -774,11 +776,127 @@ function getQuefondosQuote(identifier) {
   return row;
 }
 
+/** ====================== MORNINGSTAR (API JSON) ====================== */
+
+/**
+ * Realiza una petición al endpoint JSON público de Morningstar.
+ * @param {string} endpoint Segmento del endpoint (p.ej. "stock/v2/0P0000A5S6")
+ * @param {Object} params   Parámetros de query
+ * @return {Object|null}    Respuesta parseada o null si falla
+ */
+function _morningstarFetch(endpoint, params) {
+  var base = "https://tools.morningstar.es/api/rest.svc/";
+  var key  = "8gk3349f9g"; // passKey público utilizado por la web
+  var qs = [];
+  params = params || {};
+  for (var k in params) {
+    if (params.hasOwnProperty(k)) qs.push(k + "=" + encodeURIComponent(params[k]));
+  }
+  qs.push("output=json");
+  var url = base + key + "/" + endpoint + "?" + qs.join("&");
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+      }
+    });
+    if (res.getResponseCode && res.getResponseCode() === 200) {
+      return JSON.parse(res.getContentText());
+    }
+  } catch (e) {}
+  return null;
+}
+
+/**
+ * Búsqueda ligera en Morningstar (API sugerencias).
+ * @param {string} query Texto o ISIN a buscar
+ * @return {Object[]|null} Resultados de búsqueda o null
+ */
+function _morningstarSearch(query) {
+  var data = _morningstarFetch("security/suggest", { search: query });
+  return (data && data.length) ? data : null;
+}
+
+/**
+ * Descarga nombre, precio y divisa para un activo Morningstar.
+ * @param {string} id   Identificador Morningstar
+ * @param {string} type Tipo de activo: "stock", "fund" o "etf"
+ * @param {string} cur  Divisa requerida (por defecto EUR)
+ * @return {{name:string,price:number,currency:string}|null}
+ */
+function _morningstarQuote(id, type, cur) {
+  type = (type || "fund").toLowerCase();
+  cur = (cur || "EUR").toUpperCase();
+  var endpoint = type + "/v2/" + id;
+  var data = _morningstarFetch(endpoint, { currency: cur, id: id, locale: "es-ES" });
+  if (!data) return null;
+  var name = data.Name || data.name || data.InvestmentName || data.SecurityName || "";
+  var price = _toNumber(data.LastPrice || data.Price || (data.Quote && data.Quote.Last && data.Quote.Last.Value));
+  var currency = (data.PriceCurrency || data.Currency || data.TradeCurrency || cur || "").toUpperCase();
+  return { name: name, price: price, currency: currency };
+}
+
+/**
+ * Obtiene la cotización desde la API de Morningstar para acciones, fondos y ETFs.
+ * El identificador puede ser URL, ISIN, identificador Morningstar o texto genérico.
+ * @param {string} identifier
+ * @return {Object[][]} [[Nombre,Ticker,Precio,Divisa,"MORNINGSTAR",FechaISO]]
+ */
+function getMorningstarQuote(identifier) {
+  if (!identifier) return [["","","","","MORNINGSTAR",_isoNow()]];
+  var raw = String(identifier).trim();
+  var id = "";
+  var type = "";
+
+  // URL -> extraer tipo e ID
+  var m = /^https?:\/\/[^\/]+\/[^\/]+\/inversiones\/(acciones|fondos|etfs)\/([A-Z0-9]+)\//i.exec(raw);
+  if (m) { type = m[1]; id = m[2]; }
+
+  // ISIN -> búsqueda directa
+  var isin = _looksLikeIsin(raw);
+  if (!id && isin) {
+    var arr = _morningstarSearch(isin);
+    if (arr && arr.length) {
+      var it = arr[0];
+      id = it.Id || it.id || "";
+      type = (it.Type || "").toString().toLowerCase();
+    }
+    if (!id) return [["", isin, "", "", "MORNINGSTAR", _isoNow()]];
+  }
+
+  // Texto genérico o identificador Morningstar
+  if (!id) {
+    var arr2 = _morningstarSearch(raw);
+    if (arr2 && arr2.length) {
+      var it2 = arr2[0];
+      id = it2.Id || it2.id || raw;
+      type = (it2.Type || "").toString().toLowerCase();
+    } else {
+      id = raw;
+    }
+  }
+
+  var endpointType = /stock|accion|equity|share/.test(type) ? "stock" : (/etf/.test(type) ? "etf" : "fund");
+  var cacheKey = "msq:" + endpointType + ":" + id;
+  var cached = _getCache(cacheKey);
+  if (cached) return cached;
+
+  var q = _morningstarQuote(id, endpointType, "EUR");
+  if (!q) return [["", id, "", "", "MORNINGSTAR", _isoNow()]];
+
+  var row = [[q.name || "", id, q.price === "" ? "" : q.price, q.currency || "", "MORNINGSTAR", _isoNow()]];
+  _setCache(cacheKey, row, 60);
+  return row;
+}
+
 /** ===================== ENRUTADORES ===================== **/
 
 /**
  * Enrutador por fuente.
- * @param {string} source "YAHOO" | "COINGECKO" | "INVESTING" | "GOOGLEFINANCE" | "GOOGLE | QUEFONDOS"
+ * @param {string} source "YAHOO" | "COINGECKO" | "INVESTING" | "GOOGLEFINANCE" | "GOOGLE" | "QUEFONDOS" | "MORNINGSTAR"
  * @param {string} identifier ticker / id / url / isin según la fuente
  * @param {string} currency  solo aplica a COINGECKO (p. ej. "EUR")
  */
@@ -792,16 +910,18 @@ function resolveQuote(source, identifier, currency) {
   if (source === "INVESTING")          return getInvestingQuote(identifier);
   if (source === "GOOGLEFINANCE" || source === "GOOGLE")
                                        return getGoogleFinanceQuote(identifier);
-  if (source === "QUEFONDOS")     return getQuefondosQuote(identifier);
+  if (source === "QUEFONDOS")          return getQuefondosQuote(identifier);
+  if (source === "MORNINGSTAR")        return getMorningstarQuote(identifier);
 
   // Fallback por defecto
   return [["", "", "", "", "", _isoNow()]];
 }
 
 /**
- * Búsqueda por ISIN:
- *  - strictFunds = true → consulta Investing directamente (prioriza “funds”)
- *  - strictFunds = false/omitido → intenta Yahoo y, si no es usable, Investing con ranking
+ * Búsqueda por ISIN con estrategia de "fallback" entre fuentes:
+ *  - strictFunds = true → consulta Investing directamente (prioriza "funds")
+ *  - strictFunds = false/omitido → intenta Investing y, si falta información, recurre a
+ *    Quefondos, Morningstar y, solo para no-fondos, Yahoo y Google.
  *  - Si "hint" es una URL de Investing, se usa directamente (atajo para mapeos específicos)
  *
  * @param {string}  isin        Código ISIN (ej.: "FR00140081Y1")
@@ -833,11 +953,39 @@ function resolveQuoteByIsin(isin, hint, strictFunds) {
         return rowQF;
       }
     }
+    // Si sigue sin datos válidos, recurrir a Morningstar
+    if (!rowStrict || !rowStrict[0] || rowStrict[0][2] === "" || rowStrict[0][3] === "") {
+      var rowMsF = getMorningstarQuote(code);
+      if (rowMsF && rowMsF[0] && rowMsF[0][2] !== "" && rowMsF[0][3] !== "") {
+        _setCache(key, rowMsF, 300);
+        return rowMsF;
+      }
+    }
     _setCache(key, rowStrict, 300);
     return rowStrict;
   }
+  // 1) INVESTING (con ranking por secciones)
+  var rowInv = _resolveIsinViaInvesting_(code, hintStr);
+  if (rowInv && rowInv[0] && rowInv[0][2] !== "" && rowInv[0][3] !== "") {
+    _setCache(key, rowInv, 300);
+    return rowInv;
+  }
 
-  // 1) YAHOO: aceptamos solo si devuelve precio y divisa
+  // 2) QUEFONDOS
+  var rowQ = getQuefondosQuote(code);
+  if (rowQ && rowQ[0] && rowQ[0][2] !== "" && rowQ[0][3] !== "") {
+    _setCache(key, rowQ, 300);
+    return rowQ;
+  }
+
+  // 3) MORNINGSTAR
+  var rowMs = getMorningstarQuote(code);
+  if (rowMs && rowMs[0] && rowMs[0][2] !== "" && rowMs[0][3] !== "") {
+    _setCache(key, rowMs, 300);
+    return rowMs;
+  }
+
+  // 4) YAHOO (solo para no-fondos)
   try {
     var y = _yahooSearch(code);
     if (y && y.quotes && y.quotes.length) {
@@ -845,7 +993,6 @@ function resolveQuoteByIsin(isin, hint, strictFunds) {
         var t = String(q.quoteType || "").toUpperCase();
         return ["FUTURE", "OPTION", "INDEX", "CURRENCY"].indexOf(t) === -1;
       }) || y.quotes[0];
-
       if (hit && hit.symbol) {
         var rowY = getYahooQuote(hit.symbol);
         if (rowY && rowY[0] && rowY[0][2] !== "" && rowY[0][3] !== "") {
@@ -858,17 +1005,14 @@ function resolveQuoteByIsin(isin, hint, strictFunds) {
     // Continuar con otras fuentes si Yahoo falla
   }
 
-  // 2) INVESTING (con tu lógica de ranking por secciones)
-  var rowInv = _resolveIsinViaInvesting_(code, hintStr);
-  if (!rowInv || !rowInv[0] || rowInv[0][2] === "" || rowInv[0][3] === "") {
-    // 3) QUEFONDOS (fallback cuando Investing no aporta precio/divisa)
-    var rowQ = getQuefondosQuote(code);
-    if (rowQ && rowQ[0] && rowQ[0][2] !== "" && rowQ[0][3] !== "") {
-      _setCache(key, rowQ, 300);
-      return rowQ;
-    }
+  // 5) GOOGLE FINANCE (como último recurso para no-fondos)
+  var rowG = getGoogleFinanceQuote(code);
+  if (rowG && rowG[0] && rowG[0][2] !== "" && rowG[0][3] !== "") {
+    _setCache(key, rowG, 300);
+    return rowG;
   }
 
+  // Si ninguna fuente proporciona datos completos, devolver lo que haya en Investing
   _setCache(key, rowInv, 300);
   return rowInv;
 }
