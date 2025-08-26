@@ -19,7 +19,7 @@
  *  - resolveQuoteByIsin(isin, hint, strictFunds)
  *
  * Notas:
- *  - CacheService para reducir llamadas (60–300 s).
+ *  - CacheService para reducir llamadas (60 s–6 h).
  *  - Uso responsable de fuentes públicas; evita abusos.
  *  - Config ES: en celdas usa ; como separador de argumentos.
  */
