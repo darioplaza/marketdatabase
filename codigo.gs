@@ -10,7 +10,6 @@
  *
  * Fuentes soportadas:
  *  - YAHOO (API pública de quote)
- *  - COINGECKO (coins/markets)
  *  - INVESTING (HTML scraping robusto)
  *      · Identificador preferido = ISIN si está disponible (fondos/ETFs/bonos)
  *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities …)
@@ -18,7 +17,7 @@
  *  - GOOGLEFINANCE (página pública de Google Finance)
  *
  * Enrutadores:
- *  - resolveQuote(source, identifier, currency)
+ *  - resolveQuote(source, identifier)
  *  - resolveQuoteByIsin(isin, hint, strictFunds)
  *
  * Notas:
@@ -174,39 +173,6 @@ function _yahooSearch(query) {
   const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
   if (res.getResponseCode() !== 200) return null;
   try { return JSON.parse(res.getContentText()); } catch (e) { return null; }
-}
-
-/** ===================== COINGECKO ===================== **/
-
-/**
- * Quote de CoinGecko (solo cripto).
- * @param {string} coinId     ej. "bitcoin"
- * @param {string} vsCurrency ej. "eur"
- */
-function getCryptoQuote(coinId, vsCurrency) {
-  coinId = (coinId || "bitcoin").toLowerCase();
-  vsCurrency = (vsCurrency || "eur").toLowerCase();
-
-  const key = "cgq:" + coinId + ":" + vsCurrency;
-  const cached = _getCache(key);
-  if (cached) return cached;
-
-  const url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=" +
-              encodeURIComponent(vsCurrency) + "&ids=" + encodeURIComponent(coinId);
-  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
-  if (res.getResponseCode() !== 200) return [["","","","","COINGECKO",_isoNow()]];
-
-  const arr = JSON.parse(res.getContentText());
-  const it = (arr && arr.length) ? arr[0] : null;
-  if (!it) return [["","","","","COINGECKO",_isoNow()]];
-
-  const name = it.name || "";
-  const ticker = (it.symbol || "").toUpperCase();
-  const price = _toNumber(it.current_price);
-  const currency = vsCurrency.toUpperCase();
-  const row = [[name, ticker, price, currency, "COINGECKO", _isoNow()]];
-  _setCache(key, row, 60);
-  return row;
 }
 
 /** ===================== INVESTING (HTML) ===================== **/
@@ -778,21 +744,18 @@ function getQuefondosQuote(identifier) {
 
 /**
  * Enrutador por fuente.
- * @param {string} source "YAHOO" | "COINGECKO" | "INVESTING" | "GOOGLEFINANCE" | "GOOGLE | QUEFONDOS"
+ * @param {string} source "YAHOO" | "INVESTING" | "GOOGLEFINANCE" | "GOOGLE | QUEFONDOS"
  * @param {string} identifier ticker / id / url / isin según la fuente
- * @param {string} currency  solo aplica a COINGECKO (p. ej. "EUR")
  */
-function resolveQuote(source, identifier, currency) {
+function resolveQuote(source, identifier) {
   source = String(source || "").toUpperCase();
   identifier = String(identifier || "");
-  currency = String(currency || "EUR").toUpperCase();
 
   if (source === "YAHOO")              return getYahooQuote(identifier);
-  if (source === "COINGECKO")          return getCryptoQuote(identifier, currency);
   if (source === "INVESTING")          return getInvestingQuote(identifier);
   if (source === "GOOGLEFINANCE" || source === "GOOGLE")
                                        return getGoogleFinanceQuote(identifier);
-  if (source === "QUEFONDOS")     return getQuefondosQuote(identifier);
+  if (source === "QUEFONDOS")          return getQuefondosQuote(identifier);
 
   // Fallback por defecto
   return [["", "", "", "", "", _isoNow()]];
