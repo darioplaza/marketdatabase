@@ -776,244 +776,118 @@ function getQuefondosQuote(identifier) {
   return row;
 }
 
-/** ====================== MORNINGSTAR ====================== */
+/** ====================== MORNINGSTAR (API JSON) ====================== */
 
 /**
- * Descarga el HTML de una ficha de Morningstar.
- * @param {string} url URL absoluta de la ficha
- * @return {HTTPResponse}
+ * Realiza una petición al endpoint JSON público de Morningstar.
+ * @param {string} endpoint Segmento del endpoint (p.ej. "stock/v2/0P0000A5S6")
+ * @param {Object} params   Parámetros de query
+ * @return {Object|null}    Respuesta parseada o null si falla
  */
-function _fetchMorningstarHtml(url) {
-  return UrlFetchApp.fetch(url, {
-    muteHttpExceptions: true,
-    followRedirects: true,
-    headers: {
-      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+function _morningstarFetch(endpoint, params) {
+  var base = "https://tools.morningstar.es/api/rest.svc/";
+  var key  = "8gk3349f9g"; // passKey público utilizado por la web
+  var qs = [];
+  params = params || {};
+  for (var k in params) {
+    if (params.hasOwnProperty(k)) qs.push(k + "=" + encodeURIComponent(params[k]));
+  }
+  qs.push("output=json");
+  var url = base + key + "/" + endpoint + "?" + qs.join("&");
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true,
+      followRedirects: true,
+      headers: {
+        "User-Agent": "Mozilla/5.0",
+        "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+      }
+    });
+    if (res.getResponseCode && res.getResponseCode() === 200) {
+      return JSON.parse(res.getContentText());
     }
-  });
+  } catch (e) {}
+  return null;
 }
 
 /**
  * Búsqueda ligera en Morningstar (API sugerencias).
- * Utiliza el endpoint público de tools.morningstar para obtener coincidencias
- * por texto o ISIN.
  * @param {string} query Texto o ISIN a buscar
- * @return {Object[]} Array de resultados o null
+ * @return {Object[]|null} Resultados de búsqueda o null
  */
 function _morningstarSearch(query) {
-  var url = "https://tools.morningstar.es/api/rest.svc/8gk3349f9g/security/suggest?search=" + encodeURIComponent(query);
-  var res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
-  if (res.getResponseCode() !== 200) return null;
-  try {
-    return JSON.parse(res.getContentText());
-  } catch (e) {
-    return null;
-  }
+  var data = _morningstarFetch("security/suggest", { search: query });
+  return (data && data.length) ? data : null;
 }
 
 /**
- * Devuelve una URL de ficha de Morningstar a partir de un ISIN.
- * Intenta localizar el tipo de activo (acciones, fondos o etfs).
- * @param {string} isin Código ISIN
- * @return {string} URL completa o cadena vacía
+ * Descarga nombre, precio y divisa para un activo Morningstar.
+ * @param {string} id   Identificador Morningstar
+ * @param {string} type Tipo de activo: "stock", "fund" o "etf"
+ * @param {string} cur  Divisa requerida (por defecto EUR)
+ * @return {{name:string,price:number,currency:string}|null}
  */
-function _morningstarUrlFromIsin(isin) {
-  var arr = _morningstarSearch(isin);
-  if (!arr || !arr.length) return "";
-  var it = arr[0];
-  var id = it.Id || it.id || "";
-  var type = (it.Type || it.type || "").toString().toLowerCase();
-  var path = "";
-  if (/stock|equity|accion|shares/.test(type)) path = "acciones";
-  else if (/etf/.test(type)) path = "etfs";
-  else path = "fondos";
-  if (!id) return "";
-  return "https://global.morningstar.com/es/inversiones/" + path + "/" + id + "/cotizacion";
+function _morningstarQuote(id, type, cur) {
+  type = (type || "fund").toLowerCase();
+  cur = (cur || "EUR").toUpperCase();
+  var endpoint = type + "/v2/" + id;
+  var data = _morningstarFetch(endpoint, { currency: cur, id: id, locale: "es-ES" });
+  if (!data) return null;
+  var name = data.Name || data.name || data.InvestmentName || data.SecurityName || "";
+  var price = _toNumber(data.LastPrice || data.Price || (data.Quote && data.Quote.Last && data.Quote.Last.Value));
+  var currency = (data.PriceCurrency || data.Currency || data.TradeCurrency || cur || "").toUpperCase();
+  return { name: name, price: price, currency: currency };
 }
 
 /**
- * Intenta convertir un token (símbolo o código) en divisa ISO.
- * @param {string} tok
- * @return {string}
- */
-function _morningstarTokenToCurrency(tok) {
-  if (!tok) return "";
-  tok = String(tok).trim();
-  var map = {
-    "€": "EUR",
-    "EUR": "EUR",
-    "US$": "USD",
-    "$": "USD",
-    "USD": "USD",
-    "£": "GBP",
-    "GBP": "GBP",
-    "CHF": "CHF",
-    "CAD": "CAD",
-    "AUD": "AUD",
-    "JPY": "JPY",
-    "¥": "JPY",
-    "CNY": "CNY",
-    "HK$": "HKD",
-    "HKD": "HKD",
-    "SGD": "SGD",
-    "SEK": "SEK",
-    "NOK": "NOK",
-    "DKK": "DKK",
-    "BRL": "BRL",
-    "MXN": "MXN"
-  };
-  var up = tok.toUpperCase();
-  return map[up] || map[tok] || "";
-}
-
-/**
- * Obtiene nombre, divisa e ISIN desde el título principal de la ficha.
- * @param {string} html
- * @return {{name:string,currency:string,isin:string}|null}
- */
-function _morningstarTitleParts(html) {
-  if (!html) return null;
-  var m = /<h1[^>]*>\s*<span[^>]*itemprop="name"[^>]*>(.*?)<\/span>\s*<abbr[^>]*>([A-Z0-9]{12})<\/abbr>/i.exec(html);
-  if (!m) return null;
-  var raw = _htmlDecodeLight(m[1].replace(/<[^>]*>/g, "").trim());
-  var parts = raw.split(/\s+/);
-  var currency = _morningstarTokenToCurrency(parts[parts.length - 1]);
-  if (currency) parts.pop();
-  return {
-    name: parts.join(" ").trim(),
-    currency: currency || "",
-    isin: m[2].toUpperCase()
-  };
-}
-
-/**
- * Extrae el nombre del activo desde el HTML de Morningstar.
- * @param {string} html
- * @return {string}
- */
-function _extractMorningstarName(html) {
-  var t = _morningstarTitleParts(html);
-  if (t && t.name) return t.name;
-  if (!html) return "";
-  var m = /"instrumentName"\s*:\s*"([^"]+)"/i.exec(html);
-  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
-  m = /<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i.exec(html);
-  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
-  return "";
-}
-
-/**
- * Extrae el último precio disponible desde el HTML de Morningstar.
- * @param {string} html
- * @return {number|""}
- */
-function _extractMorningstarPrice(html) {
-  if (!html) return "";
-  // Bloque de rendimiento: buscar el valor asociado a "Fondo"
-  var m = /Fondo[\s\S]*?<span[^>]*class="value"[^>]*>([^<]+)/i.exec(html);
-  if (m && m[1]) {
-    var n = _parseEuropeanNumber(m[1]);
-    if (!isNaN(n)) return n;
-  }
-  m = /"lastPrice"\s*:\s*([0-9][0-9\.\,]*)/i.exec(html);
-  if (m && m[1]) {
-    var n1 = _parseEuropeanNumber(m[1]);
-    if (!isNaN(n1)) return n1;
-  }
-  m = /"price"\s*:\s*{\s*"value"\s*:\s*([0-9][0-9\.\,]*)/i.exec(html);
-  if (m && m[1]) {
-    var n2 = _parseEuropeanNumber(m[1]);
-    if (!isNaN(n2)) return n2;
-  }
-  return _firstNumberLike(html);
-}
-
-/**
- * Extrae la divisa (EUR, USD, ...) desde el HTML de Morningstar.
- * @param {string} html
- * @return {string}
- */
-function _extractMorningstarCurrency(html) {
-  var t = _morningstarTitleParts(html);
-  if (t && t.currency) return t.currency;
-  if (!html) return "";
-  var m = /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
-  if (m && m[1]) return m[1].toUpperCase();
-  m = /\b(EUR|USD|GBP|JPY|CHF|AUD|CAD)\b/.exec(html);
-  if (m && m[1]) return m[1].toUpperCase();
-  return "";
-}
-
-/**
- * Intenta obtener un identificador relevante desde el HTML de Morningstar
- * (ISIN o símbolo).
- * @param {string} html
- * @return {string}
- */
-function _extractMorningstarTicker(html) {
-  var t = _morningstarTitleParts(html);
-  if (t && t.isin) return t.isin;
-  if (!html) return "";
-  var m = /"isin"\s*:\s*"([A-Z0-9]{12})"/i.exec(html);
-  if (m && m[1]) return m[1].toUpperCase();
-  m = /"symbol"\s*:\s*"([A-Z0-9\.\-]+)"/i.exec(html);
-  if (m && m[1]) return m[1].toUpperCase();
-  return "";
-}
-
-/**
- * Obtiene la cotización desde global.morningstar.com para acciones, fondos y ETFs.
- * El identificador puede ser una URL, un ISIN o un identificador de Morningstar.
+ * Obtiene la cotización desde la API de Morningstar para acciones, fondos y ETFs.
+ * El identificador puede ser URL, ISIN, identificador Morningstar o texto genérico.
  * @param {string} identifier
- * @return {Object[][]} [[Nombre, Ticker, Precio, Divisa, "MORNINGSTAR", FechaISO]]
+ * @return {Object[][]} [[Nombre,Ticker,Precio,Divisa,"MORNINGSTAR",FechaISO]]
  */
 function getMorningstarQuote(identifier) {
-  if (!identifier) return [["", "", "", "", "MORNINGSTAR", _isoNow()]];
-
+  if (!identifier) return [["","","","","MORNINGSTAR",_isoNow()]];
   var raw = String(identifier).trim();
-  var possibleIsin = _looksLikeIsin(raw);
-  var url = "";
+  var id = "";
+  var type = "";
 
-  if (/^https?:\/\//i.test(raw)) {
-    url = raw;
-  } else if (possibleIsin) {
-    url = _morningstarUrlFromIsin(possibleIsin);
-    if (!url) {
-      return [["", possibleIsin, "", "", "MORNINGSTAR", _isoNow()]];
-    }
-  } else if (/^[A-Z0-9]{10,}$/i.test(raw)) {
-    // Se asume que es un identificador de Morningstar; intentar como acción primero
-    url = "https://global.morningstar.com/es/inversiones/acciones/" + raw + "/cotizacion";
-  } else {
-    // Búsqueda por texto genérico
-    var arr = _morningstarSearch(raw);
+  // URL -> extraer tipo e ID
+  var m = /^https?:\/\/[^\/]+\/[^\/]+\/inversiones\/(acciones|fondos|etfs)\/([A-Z0-9]+)\//i.exec(raw);
+  if (m) { type = m[1]; id = m[2]; }
+
+  // ISIN -> búsqueda directa
+  var isin = _looksLikeIsin(raw);
+  if (!id && isin) {
+    var arr = _morningstarSearch(isin);
     if (arr && arr.length) {
       var it = arr[0];
-      var id = it.Id || it.id || "";
-      var t = (it.Type || "").toString().toLowerCase();
-      var path = /etf/.test(t) ? "etfs" : (/stock|equity|accion|shares/.test(t) ? "acciones" : "fondos");
-      if (id) url = "https://global.morningstar.com/es/inversiones/" + path + "/" + id + "/cotizacion";
+      id = it.Id || it.id || "";
+      type = (it.Type || "").toString().toLowerCase();
+    }
+    if (!id) return [["", isin, "", "", "MORNINGSTAR", _isoNow()]];
+  }
+
+  // Texto genérico o identificador Morningstar
+  if (!id) {
+    var arr2 = _morningstarSearch(raw);
+    if (arr2 && arr2.length) {
+      var it2 = arr2[0];
+      id = it2.Id || it2.id || raw;
+      type = (it2.Type || "").toString().toLowerCase();
+    } else {
+      id = raw;
     }
   }
 
-  if (!url) return [["", "", "", "", "MORNINGSTAR", _isoNow()]];
-
-  var cacheKey = "msq:" + url;
+  var endpointType = /stock|accion|equity|share/.test(type) ? "stock" : (/etf/.test(type) ? "etf" : "fund");
+  var cacheKey = "msq:" + endpointType + ":" + id;
   var cached = _getCache(cacheKey);
   if (cached) return cached;
 
-  var res = _fetchMorningstarHtml(url);
-  var html = (res && res.getResponseCode && res.getResponseCode() === 200) ? res.getContentText() : "";
-  if (!html) return [["", "", "", "", "MORNINGSTAR", _isoNow()]];
+  var q = _morningstarQuote(id, endpointType, "EUR");
+  if (!q) return [["", id, "", "", "MORNINGSTAR", _isoNow()]];
 
-  var name = _extractMorningstarName(html);
-  var price = _extractMorningstarPrice(html);
-  var currency = _extractMorningstarCurrency(html);
-  var ticker = _extractMorningstarTicker(html) || possibleIsin || "";
-
-  var row = [[name || "", ticker || "", price === "" ? "" : price, currency || "", "MORNINGSTAR", _isoNow()]];
+  var row = [[q.name || "", id, q.price === "" ? "" : q.price, q.currency || "", "MORNINGSTAR", _isoNow()]];
   _setCache(cacheKey, row, 60);
   return row;
 }
