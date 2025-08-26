@@ -54,6 +54,7 @@ function _toNumber(x) {
 function _parseEuropeanNumber(s) {
   if (!s || typeof s !== "string") return "";
   s = s.trim().replace(/[^\d,.\-]/g, "");
+  if (s === "") return "";
   if (s.indexOf(",") > -1 && s.indexOf(".") > -1) s = s.replace(/\./g, "").replace(",", ".");
   else if (s.indexOf(",") > -1) s = s.replace(",", ".");
   const n = Number(s);
