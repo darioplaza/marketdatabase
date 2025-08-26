@@ -643,25 +643,27 @@ function _extractQuefondosPrice(html) {
   if (!html) return "";
   var m;
 
-  // Sección "Última valoración": <h4>Última valoración</h4> ... 123,45 EUR
-  m = /(?:Última|Ultima)\s+valoraci(?:ó|o)n[^0-9]*([0-9][0-9\.\,]*)/i.exec(html);
-  if (m && m[1]) {
-    var n0 = _parseEuropeanNumber(m[1]);
-    if (!isNaN(n0)) return n0;
-  }
-
-  // Patrón directo: "Valor liquidativo: 112,528561"
-  m = /Valor\s*liquidativo[^0-9]*([0-9][0-9\.\,]*)/i.exec(html);
+  // Patrón principal: "Valor liquidativo: </span><span class="floatright">114,206172 EUR".
+  // Se asegura de capturar el número mostrado tras el texto "Valor liquidativo" para
+  // evitar confundirlo con otros dígitos (ej. los del ISIN).
+  m = /Valor\s*liquidativo\s*:\s*<\/span>\s*<span[^>]*>\s*([0-9][0-9\.\,]*)/i.exec(html);
   if (m && m[1]) {
     var n = _parseEuropeanNumber(m[1]);
-    return isNaN(n) ? "" : n;
+    if (!isNaN(n)) return n;
   }
 
-  // Patrón en tabla: <td>Valor liquidativo</td> <td>112,528561 EUR</td>
+  // Patrón directo alternativo: "Valor liquidativo: 112,528561" (sin etiquetas intermedias)
+  m = /Valor\s*liquidativo[^0-9]*([0-9][0-9\.\,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n1 = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n1)) return n1;
+  }
+
+  // Patrón en tabla: <td>Valor liquidativo</td><td>112,528561 EUR</td>
   m = /Valor\s*liquidativo.*?<td[^>]*>\s*([0-9][0-9\.\,]*)/is.exec(html);
   if (m && m[1]) {
     var n2 = _parseEuropeanNumber(m[1]);
-    return isNaN(n2) ? "" : n2;
+    if (!isNaN(n2)) return n2;
   }
 
   return "";
