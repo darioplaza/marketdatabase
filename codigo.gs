@@ -834,15 +834,70 @@ function _morningstarUrlFromIsin(isin) {
 }
 
 /**
+ * Intenta convertir un token (símbolo o código) en divisa ISO.
+ * @param {string} tok
+ * @return {string}
+ */
+function _morningstarTokenToCurrency(tok) {
+  if (!tok) return "";
+  tok = String(tok).trim();
+  var map = {
+    "€": "EUR",
+    "EUR": "EUR",
+    "US$": "USD",
+    "$": "USD",
+    "USD": "USD",
+    "£": "GBP",
+    "GBP": "GBP",
+    "CHF": "CHF",
+    "CAD": "CAD",
+    "AUD": "AUD",
+    "JPY": "JPY",
+    "¥": "JPY",
+    "CNY": "CNY",
+    "HK$": "HKD",
+    "HKD": "HKD",
+    "SGD": "SGD",
+    "SEK": "SEK",
+    "NOK": "NOK",
+    "DKK": "DKK",
+    "BRL": "BRL",
+    "MXN": "MXN"
+  };
+  var up = tok.toUpperCase();
+  return map[up] || map[tok] || "";
+}
+
+/**
+ * Obtiene nombre, divisa e ISIN desde el título principal de la ficha.
+ * @param {string} html
+ * @return {{name:string,currency:string,isin:string}|null}
+ */
+function _morningstarTitleParts(html) {
+  if (!html) return null;
+  var m = /<h1[^>]*>\s*<span[^>]*itemprop="name"[^>]*>(.*?)<\/span>\s*<abbr[^>]*>([A-Z0-9]{12})<\/abbr>/i.exec(html);
+  if (!m) return null;
+  var raw = _htmlDecodeLight(m[1].replace(/<[^>]*>/g, "").trim());
+  var parts = raw.split(/\s+/);
+  var currency = _morningstarTokenToCurrency(parts[parts.length - 1]);
+  if (currency) parts.pop();
+  return {
+    name: parts.join(" ").trim(),
+    currency: currency || "",
+    isin: m[2].toUpperCase()
+  };
+}
+
+/**
  * Extrae el nombre del activo desde el HTML de Morningstar.
  * @param {string} html
  * @return {string}
  */
 function _extractMorningstarName(html) {
+  var t = _morningstarTitleParts(html);
+  if (t && t.name) return t.name;
   if (!html) return "";
-  var m = /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
-  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
-  m = /"instrumentName"\s*:\s*"([^"]+)"/i.exec(html);
+  var m = /"instrumentName"\s*:\s*"([^"]+)"/i.exec(html);
   if (m && m[1]) return _htmlDecodeLight(m[1].trim());
   m = /<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i.exec(html);
   if (m && m[1]) return _htmlDecodeLight(m[1].trim());
@@ -856,15 +911,21 @@ function _extractMorningstarName(html) {
  */
 function _extractMorningstarPrice(html) {
   if (!html) return "";
-  var m = /"lastPrice"\s*:\s*([0-9][0-9\.\,]*)/i.exec(html);
+  // Bloque de rendimiento: buscar el valor asociado a "Fondo"
+  var m = /Fondo[\s\S]*?<span[^>]*class="value"[^>]*>([^<]+)/i.exec(html);
   if (m && m[1]) {
     var n = _parseEuropeanNumber(m[1]);
     if (!isNaN(n)) return n;
   }
-  m = /"price"\s*:\s*{\s*"value"\s*:\s*([0-9][0-9\.\,]*)/i.exec(html);
+  m = /"lastPrice"\s*:\s*([0-9][0-9\.\,]*)/i.exec(html);
   if (m && m[1]) {
     var n1 = _parseEuropeanNumber(m[1]);
     if (!isNaN(n1)) return n1;
+  }
+  m = /"price"\s*:\s*{\s*"value"\s*:\s*([0-9][0-9\.\,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n2 = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n2)) return n2;
   }
   return _firstNumberLike(html);
 }
@@ -875,6 +936,8 @@ function _extractMorningstarPrice(html) {
  * @return {string}
  */
 function _extractMorningstarCurrency(html) {
+  var t = _morningstarTitleParts(html);
+  if (t && t.currency) return t.currency;
   if (!html) return "";
   var m = /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
   if (m && m[1]) return m[1].toUpperCase();
@@ -890,6 +953,8 @@ function _extractMorningstarCurrency(html) {
  * @return {string}
  */
 function _extractMorningstarTicker(html) {
+  var t = _morningstarTitleParts(html);
+  if (t && t.isin) return t.isin;
   if (!html) return "";
   var m = /"isin"\s*:\s*"([A-Z0-9]{12})"/i.exec(html);
   if (m && m[1]) return m[1].toUpperCase();
