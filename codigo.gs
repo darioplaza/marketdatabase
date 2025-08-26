@@ -603,7 +603,7 @@ function _fetchQuefondosHtml(url) {
 
 /**
  * Intenta extraer el nombre (fondo/plan) desde el HTML de quefondos.
- * Estrategia: meta og:title > <h1> > <h2> (ignorando encabezados genéricos).
+ * Estrategia: <h2> > meta og:title > <h1> (ignorando encabezados genéricos).
  * @param {string} html
  * @return {string}
  */
@@ -611,23 +611,23 @@ function _extractQuefondosName(html) {
   if (!html) return "";
   var m;
 
-  // 1) <meta property="og:title" content="...">
-  m = /<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i.exec(html);
-  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
-
-  // 2) <h1>Nombre</h1>
-  m = /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
-  if (m && m[1]) {
-    var h1 = _htmlDecodeLight(m[1].trim());
-    if (h1 && !/^Informe\s+del/i.test(h1)) return h1;
-  }
-
-  // 3) <h2>Nombre</h2>, saltando "Informe del fondo/plan"
+  // 1) <h2>Nombre</h2>, saltando "Informe del fondo/plan"
   var re = /<h2[^>]*>([^<]+)<\/h2>/ig;
   var r;
   while ((r = re.exec(html)) !== null) {
     var t = _htmlDecodeLight((r[1] || "").trim());
     if (t && !/^Informe\s+del/i.test(t)) return t;
+  }
+
+  // 2) <meta property="og:title" content="...">
+  m = /<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i.exec(html);
+  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
+
+  // 3) <h1>Nombre</h1>
+  m = /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
+  if (m && m[1]) {
+    var h1 = _htmlDecodeLight(m[1].trim());
+    if (h1 && !/^Informe\s+del/i.test(h1)) return h1;
   }
 
   return "";
@@ -643,18 +643,27 @@ function _extractQuefondosPrice(html) {
   if (!html) return "";
   var m;
 
-  // Patrón directo: "Valor liquidativo: 112,528561"
-  m = /Valor\s*liquidativo[^0-9]*([0-9][0-9\.\,]*)/i.exec(html);
+  // Patrón principal: "Valor liquidativo: </span><span class="floatright">114,206172 EUR".
+  // Se asegura de capturar el número mostrado tras el texto "Valor liquidativo" para
+  // evitar confundirlo con otros dígitos (ej. los del ISIN).
+  m = /Valor\s*liquidativo\s*:\s*<\/span>\s*<span[^>]*>\s*([0-9][0-9\.\,]*)/i.exec(html);
   if (m && m[1]) {
     var n = _parseEuropeanNumber(m[1]);
-    return isNaN(n) ? "" : n;
+    if (!isNaN(n)) return n;
   }
 
-  // Patrón en tabla: <td>Valor liquidativo</td> <td>112,528561 EUR</td>
+  // Patrón directo alternativo: "Valor liquidativo: 112,528561" (sin etiquetas intermedias)
+  m = /Valor\s*liquidativo[^0-9]*([0-9][0-9\.\,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n1 = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n1)) return n1;
+  }
+
+  // Patrón en tabla: <td>Valor liquidativo</td><td>112,528561 EUR</td>
   m = /Valor\s*liquidativo.*?<td[^>]*>\s*([0-9][0-9\.\,]*)/is.exec(html);
   if (m && m[1]) {
     var n2 = _parseEuropeanNumber(m[1]);
-    return isNaN(n2) ? "" : n2;
+    if (!isNaN(n2)) return n2;
   }
 
   return "";
@@ -673,8 +682,12 @@ function _extractQuefondosCurrency(html) {
   m = /Divisa\s*:\s*([A-Z]{3})/i.exec(html);
   if (m && m[1]) return m[1].toUpperCase();
 
+  // Sección "Última valoración ... 123,45 EUR"
+  m = /(?:Última|Ultima)\s+valoraci(?:ó|o)n[^0-9]*[0-9][0-9\.\,]*\s*([A-Z]{3})/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
   // "Valor liquidativo: 112,528561 EUR"
-  m = /Valor\s*liquidativo[^A-Z]*([A-Z]{3})/i.exec(html);
+  m = /Valor\s*liquidativo[^0-9]*[0-9][0-9\.\,]*\s*([A-Z]{3})/i.exec(html);
   if (m && m[1]) return m[1].toUpperCase();
 
   // Tabla: <td>Divisa</td><td>EUR</td>
