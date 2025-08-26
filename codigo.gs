@@ -10,7 +10,7 @@
  *  - COINGECKO (coins/markets)
  *  - INVESTING (HTML scraping robusto)
  *      · Identificador preferido = ISIN si está disponible (fondos/ETFs/bonos)
- *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities …)
+ *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities > indices > currencies > crypto > certificates)
  *      · Detección de DIVISA contextual al precio (evita falsos USD)
  *  - GOOGLEFINANCE (página pública de Google Finance)
  *
@@ -19,7 +19,7 @@
  *  - resolveQuoteByIsin(isin, hint, strictFunds)
  *
  * Notas:
- *  - CacheService para reducir llamadas (60–300 s).
+ *  - CacheService para reducir llamadas (60 s–6 h).
  *  - Uso responsable de fuentes públicas; evita abusos.
  *  - Config ES: en celdas usa ; como separador de argumentos.
  */
@@ -54,7 +54,6 @@ function _toNumber(x) {
 function _parseEuropeanNumber(s) {
   if (!s || typeof s !== "string") return "";
   s = s.trim().replace(/[^\d,.\-]/g, "");
-  if (s === "") return "";
   if (s.indexOf(",") > -1 && s.indexOf(".") > -1) s = s.replace(/\./g, "").replace(",", ".");
   else if (s.indexOf(",") > -1) s = s.replace(",", ".");
   const n = Number(s);
@@ -336,7 +335,7 @@ function _investingPickBestLinkByIsin(html, isin, hint) {
 
   const SECTION_PRIORITY = {
     "funds": 90, "etfs": 80, "bonds": 70, "equities": 60,
-    "indices": 40, "currencies": 30, "crypto": 20, "certificates": 50
+    "indices": 40, "currencies": 30, "crypto": 20, "certificates": 10
   };
 
   function score(c) {
