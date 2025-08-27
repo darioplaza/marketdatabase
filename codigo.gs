@@ -1,5 +1,8 @@
 /**
- * MarketDataService (v8.8)
+ * MarketDataService (v10.0)
+ *
+ * darioplaza@gmail.com
+ * 26/11/2025
  * -------------------------------------------------------------
  * Librería de datos de mercado para Google Sheets (Apps Script).
  * Devuelve cotizaciones en UNA fila 1×6 con el formato:
@@ -7,19 +10,20 @@
  *
  * Fuentes soportadas:
  *  - YAHOO (API pública de quote)
- *  - COINGECKO (coins/markets)
  *  - INVESTING (HTML scraping robusto)
  *      · Identificador preferido = ISIN si está disponible (fondos/ETFs/bonos)
- *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities > indices > currencies > crypto > certificates)
+ *      · Búsqueda por ISIN con ranking por sección (funds > etfs > bonds > equities …)
  *      · Detección de DIVISA contextual al precio (evita falsos USD)
  *  - GOOGLEFINANCE (página pública de Google Finance)
+ *  - QUEFONDOS (fondos y planes, HTML)
+ *  - FINANCIALTIMES (fondos, ETFs y acciones)
  *
  * Enrutadores:
- *  - resolveQuote(source, identifier, currency)
+ *  - resolveQuote(source, identifier)
  *  - resolveQuoteByIsin(isin, hint, strictFunds)
  *
  * Notas:
- *  - CacheService para reducir llamadas (60 s–6 h).
+ *  - CacheService para reducir llamadas (60–300 s).
  *  - Uso responsable de fuentes públicas; evita abusos.
  *  - Config ES: en celdas usa ; como separador de argumentos.
  */
@@ -43,6 +47,28 @@ function _setCache(key, value, seconds) {
   } catch (e) {}
 }
 
+/**
+ * Decodificación ligera de entidades HTML comunes.
+ * @param {string} s
+ * @return {string}
+ */
+function _htmlDecodeLight(s) {
+  if (!s) return s;
+  return String(s)
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&aacute;/gi, "á").replace(/&eacute;/gi, "é")
+    .replace(/&iacute;/gi, "í").replace(/&oacute;/gi, "ó")
+    .replace(/&uacute;/gi, "ú").replace(/&ntilde;/gi, "ñ")
+    .replace(/&Aacute;/gi, "Á").replace(/&Eacute;/gi, "É")
+    .replace(/&Iacute;/gi, "Í").replace(/&Oacute;/gi, "Ó")
+    .replace(/&Uacute;/gi, "Ú").replace(/&Ntilde;/gi, "Ñ");
+}
+
 /** Coerción numérica tolerante. */
 function _toNumber(x) {
   if (x === null || x === undefined || x === "") return "";
@@ -50,14 +76,21 @@ function _toNumber(x) {
   return isNaN(n) ? "" : n;
 }
 
-/** Parser numérico europeo (punto miles, coma decimal). */
+/**
+ * Convierte número con formato europeo ("1.234,56" -> 1234.56).
+ * Solo se define si no existe ya en el proyecto.
+ * @param {string|number} s
+ * @return {number}
+ */
 function _parseEuropeanNumber(s) {
-  if (!s || typeof s !== "string") return "";
-  s = s.trim().replace(/[^\d,.\-]/g, "");
-  if (s.indexOf(",") > -1 && s.indexOf(".") > -1) s = s.replace(/\./g, "").replace(",", ".");
-  else if (s.indexOf(",") > -1) s = s.replace(",", ".");
-  const n = Number(s);
-  return isNaN(n) ? "" : n;
+  if (s === null || s === undefined) return NaN;
+  if (typeof s === "number") return s;
+  s = String(s).trim();
+  if (!s) return NaN;
+  // Eliminar separadores de millar (punto) y cambiar coma por punto
+  s = s.replace(/\./g, "").replace(/,/g, ".");
+  var n = Number(s);
+  return isNaN(n) ? NaN : n;
 }
 
 /** Primer número plausible en HTML (fallback). */
@@ -66,18 +99,45 @@ function _firstNumberLike(html) {
   return m ? _parseEuropeanNumber(m[0]) : "";
 }
 
-/** Timestamp ISO (UTC). */
-function _isoNow() { return new Date().toISOString(); }
-
-/** Normaliza ISIN. */
-function _normalizeIsin(isin) { return String(isin || "").toUpperCase().replace(/\s+/g, ""); }
-
-/** ¿Se parece a un ISIN? Devuelve el ISIN o "". */
-function _looksLikeIsin(s) {
-  const m = String(s || "").toUpperCase().match(/\b([A-Z]{2}[A-Z0-9]{9}\d)\b/);
-  return m ? m[1] : "";
+/**
+ * Devuelve un timestamp ISO (UTC) — alineado con el resto de fuentes.
+ * @return {string}
+ */
+function _isoNow() {
+  return new Date().toISOString();
 }
 
+/**
+ * Detección básica de ISIN (12 chars alfanum, comienza por 2 letras).
+ * @param {string} code
+ * @return {string|""} ISIN normalizado o cadena vacía
+ */
+function _looksLikeIsin(code) {
+  if (!code) return "";
+  code = String(code).trim().toUpperCase();
+  return /^[A-Z]{2}[A-Z0-9]{10}$/.test(code) ? code : "";
+}
+
+/**
+ * Normaliza un posible ISIN (mantiene arriba si ya lo es).
+ * @param {string} v
+ * @return {string}
+ */
+function _normalizeIsin(v) {
+  var c = _looksLikeIsin(v);
+  return c || String(v || "").trim().toUpperCase();
+}
+
+/**
+ * Extrae un parámetro de query de una URL (p. ej. ?isin=ES...).
+ * @param {string} url
+ * @param {string} name
+ * @return {string}
+ */
+function _getUrlParam(url, name) {
+  var m = new RegExp("[?&]" + name + "=([^&]+)", "i").exec(url || "");
+  return m && m[1] ? decodeURIComponent(m[1]) : "";
+}
 /** ===================== YAHOO FINANCE ===================== **/
 
 /**
@@ -117,40 +177,9 @@ function _yahooSearch(query) {
   try { return JSON.parse(res.getContentText()); } catch (e) { return null; }
 }
 
-/** ===================== COINGECKO ===================== **/
-
-/**
- * Quote de CoinGecko (solo cripto).
- * @param {string} coinId     ej. "bitcoin"
- * @param {string} vsCurrency ej. "eur"
- */
-function getCryptoQuote(coinId, vsCurrency) {
-  coinId = (coinId || "bitcoin").toLowerCase();
-  vsCurrency = (vsCurrency || "eur").toLowerCase();
-
-  const key = "cgq:" + coinId + ":" + vsCurrency;
-  const cached = _getCache(key);
-  if (cached) return cached;
-
-  const url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=" +
-              encodeURIComponent(vsCurrency) + "&ids=" + encodeURIComponent(coinId);
-  const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true, followRedirects: true });
-  if (res.getResponseCode() !== 200) return [["","","","","COINGECKO",_isoNow()]];
-
-  const arr = JSON.parse(res.getContentText());
-  const it = (arr && arr.length) ? arr[0] : null;
-  if (!it) return [["","","","","COINGECKO",_isoNow()]];
-
-  const name = it.name || "";
-  const ticker = (it.symbol || "").toUpperCase();
-  const price = _toNumber(it.current_price);
-  const currency = vsCurrency.toUpperCase();
-  const row = [[name, ticker, price, currency, "COINGECKO", _isoNow()]];
-  _setCache(key, row, 60);
-  return row;
-}
-
 /** ===================== INVESTING (HTML) ===================== **/
+
+/** ===================== INVESTING: Fetch & Parsers ===================== **/
 
 /**
  * Normaliza identificadores de Investing:
@@ -289,8 +318,6 @@ function _extractIsinFromInvestingUrl(url) {
   return m ? m[2] : "";
 }
 
-/** ===================== BÚSQUEDA EN INVESTING POR ISIN ===================== **/
-
 /** Página de resultados de búsqueda de Investing para una query. */
 function _investingSearchHtml(query) {
   const url = "https://es.investing.com/search/?q=" + encodeURIComponent(query);
@@ -335,7 +362,7 @@ function _investingPickBestLinkByIsin(html, isin, hint) {
 
   const SECTION_PRIORITY = {
     "funds": 90, "etfs": 80, "bonds": 70, "equities": 60,
-    "indices": 40, "currencies": 30, "crypto": 20, "certificates": 10
+    "indices": 40, "currencies": 30, "crypto": 20, "certificates": 50
   };
 
   function score(c) {
@@ -363,7 +390,7 @@ function _investingPickBestLinkByIsin(html, isin, hint) {
   return candidates[0] ? ("https://es.investing.com" + candidates[0].href) : "";
 }
 
-/** ===================== QUOTE DE INVESTING ===================== **/
+/** ===================== INVESTING: QUOTE ===================== **/
 
 /**
  * Obtener cotización desde Investing:
@@ -522,32 +549,371 @@ function getGoogleFinanceQuote(symbol) {
   return [["","","","","GOOGLEFINANCE", _isoNow()]];
 }
 
+/** ===================== QUEFONDOS (HTML) ===================== **/
+
+/** ====================== QUEFONDOS: Fetch & Parsers ====================== */
+/**
+ * Descarga HTML de quefondos.com con cabeceras tipo navegador.
+ * @param {string} url
+ * @return {HTTPResponse}
+ */
+function _fetchQuefondosHtml(url) {
+  return UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+    }
+  });
+}
+
+/**
+ * Intenta extraer el nombre (fondo/plan) desde el HTML de quefondos.
+ * Estrategia: <h2> > meta og:title > <h1> (ignorando encabezados genéricos).
+ * @param {string} html
+ * @return {string}
+ */
+function _extractQuefondosName(html) {
+  if (!html) return "";
+  var m;
+
+  // 1) <h2>Nombre</h2>, saltando "Informe del fondo/plan"
+  var re = /<h2[^>]*>([^<]+)<\/h2>/ig;
+  var r;
+  while ((r = re.exec(html)) !== null) {
+    var t = _htmlDecodeLight((r[1] || "").trim());
+    if (t && !/^Informe\s+del/i.test(t)) return t;
+  }
+
+  // 2) <meta property="og:title" content="...">
+  m = /<meta\s+property=["']og:title["']\s+content=["']([^"']+)["']/i.exec(html);
+  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
+
+  // 3) <h1>Nombre</h1>
+  m = /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
+  if (m && m[1]) {
+    var h1 = _htmlDecodeLight(m[1].trim());
+    if (h1 && !/^Informe\s+del/i.test(h1)) return h1;
+  }
+
+  return "";
+}
+
+/**
+ * Extrae el Valor liquidativo (número) desde el HTML de quefondos.
+ * Acepta formatos "112,528561" con o sin divisa a la derecha.
+ * @param {string} html
+ * @return {number|""}
+ */
+function _extractQuefondosPrice(html) {
+  if (!html) return "";
+  var m;
+
+  // Patrón principal: "Valor liquidativo: </span><span class="floatright">114,206172 EUR".
+  // Se asegura de capturar el número mostrado tras el texto "Valor liquidativo" para
+  // evitar confundirlo con otros dígitos (ej. los del ISIN).
+  m = /Valor\s*liquidativo\s*:\s*<\/span>\s*<span[^>]*>\s*([0-9][0-9\.\,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n)) return n;
+  }
+
+  // Patrón directo alternativo: "Valor liquidativo: 112,528561" (sin etiquetas intermedias)
+  m = /Valor\s*liquidativo[^0-9]*([0-9][0-9\.\,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n1 = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n1)) return n1;
+  }
+
+  // Patrón en tabla: <td>Valor liquidativo</td><td>112,528561 EUR</td>
+  m = /Valor\s*liquidativo.*?<td[^>]*>\s*([0-9][0-9\.\,]*)/is.exec(html);
+  if (m && m[1]) {
+    var n2 = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n2)) return n2;
+  }
+
+  return "";
+}
+
+/**
+ * Extrae la divisa (EUR, USD, ...) desde el HTML de quefondos.
+ * @param {string} html
+ * @return {string}
+ */
+function _extractQuefondosCurrency(html) {
+  if (!html) return "";
+  var m;
+
+  // "Divisa: EUR"
+  m = /Divisa\s*:\s*([A-Z]{3})/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
+  // Sección "Última valoración ... 123,45 EUR"
+  m = /(?:Última|Ultima)\s+valoraci(?:ó|o)n[^0-9]*[0-9][0-9\.\,]*\s*([A-Z]{3})/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
+  // "Valor liquidativo: 112,528561 EUR"
+  m = /Valor\s*liquidativo[^0-9]*[0-9][0-9\.\,]*\s*([A-Z]{3})/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
+  // Tabla: <td>Divisa</td><td>EUR</td>
+  m = /<td[^>]*>\s*Divisa\s*<\/td>\s*<td[^>]*>\s*([A-Z]{3})\s*<\/td>/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
+  return "";
+}
+
+/**
+ * Extrae un identificador del instrumento desde la ficha:
+ *  - ISIN para fondos
+ *  - Código DGS (tipo N####) para planes
+ * @param {string} html
+ * @return {string}
+ */
+function _extractQuefondosCode(html) {
+  if (!html) return "";
+  var m;
+
+  // ISIN: 12 caracteres (2 letras + 10 alfanum)
+  m = /\bISIN\s*:\s*([A-Z0-9]{12})/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
+  // Código DGS (admite "Código", "C&oacute;digo", "Cod.", etc.)
+  m = /C(?:o|&oacute;)?d(?:igo|\.?)\s*(?:DGS|D\.?G\.?S\.?)\s*:\s*([A-Z0-9]+)/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+
+  return "";
+}
+
+
+/** ====================== QUEFONDOS: QUOTE ====================== */
+/**
+ * Obtiene la cotización de un fondo o plan desde quefondos.com.
+ * - Si 'identifier' es URL, se usa tal cual.
+ * - Si parece ISIN, se consulta como fondo.
+ * - Si parece un código DGS (N####), se consulta como plan de pensiones.
+ *
+ * @param {string} identifier  ISIN (fondos), código DGS tipo "N2247" (planes) o URL completa.
+ * @return {Object[][]} Matriz con una fila: [[Nombre, Ticker, Precio, Divisa, "QUEFONDOS", FechaISO]]
+ */
+function getQuefondosQuote(identifier) {
+  if (!identifier) return [["", "", "", "", "QUEFONDOS", _isoNow()]];
+
+  var raw = String(identifier).trim();
+  var possibleIsin = _looksLikeIsin(raw);
+  var url = "";
+
+  if (/^https?:\/\//i.test(raw)) {
+    url = raw;
+  } else if (possibleIsin) {
+    // Fondo (ISIN)
+    url = "https://www.quefondos.com/es/fondos/ficha/index.html?isin=" + possibleIsin;
+  } else if (/^N\d{3,6}$/i.test(raw)) {
+    // Plan de pensiones (código DGS)
+    url = "https://www.quefondos.com/es/planes/ficha/index.html?isin=" + raw.toUpperCase();
+  } else {
+    // Por defecto, intentar como fondo
+    url = "https://www.quefondos.com/es/fondos/ficha/index.html?isin=" + encodeURIComponent(raw);
+  }
+
+  var cacheKey = "qf:" + url;
+  var cached = _getCache(cacheKey);
+  if (cached) return cached;
+
+  var res = _fetchQuefondosHtml(url);
+  var html = (res && res.getResponseCode && res.getResponseCode() === 200) ? res.getContentText() : "";
+  if (!html) return [["", "", "", "", "QUEFONDOS", _isoNow()]];
+
+  var name = _extractQuefondosName(html);
+  var price = _extractQuefondosPrice(html);
+  var currency = _extractQuefondosCurrency(html);
+
+  // Determinar ticker (ISIN o DGS) desde HTML; si no, desde query ?isin=
+  var ticker = _extractQuefondosCode(html);
+  if (!ticker) {
+    var qIsin = _getUrlParam(url, "isin");
+    if (qIsin) ticker = String(qIsin).toUpperCase();
+  }
+
+  var row = [[ name || "", ticker || "", price === "" ? "" : price, currency || "", "QUEFONDOS", _isoNow() ]];
+  _setCache(cacheKey, row, 60); // TTL corto
+  return row;
+}
+
+/** ====================== FINANCIAL TIMES ====================== **/
+
+function _fetchFtHtml(url) {
+  return UrlFetchApp.fetch(url, {
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept-Language": "es-ES,es;q=0.9,en;q=0.8"
+    }
+  });
+}
+
+/**
+ * Intenta extraer el nombre del activo desde Financial Times.
+ * @param {string} html
+ * @return {string}
+ */
+function _extractFtName(html) {
+  if (!html) return "";
+  var m = /<h1[^>]*>([^<]+)<\/h1>/i.exec(html);
+  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
+  m = /"name"\s*:\s*"([^"\n]+)"/i.exec(html);
+  if (m && m[1]) return _htmlDecodeLight(m[1].trim());
+  m = /<title>([^<]+)<\/title>/i.exec(html);
+  if (m && m[1]) return _htmlDecodeLight(m[1].replace(/\s*\|\s*Financial\s+Times/i, "").trim());
+  return "";
+}
+
+/**
+ * Extrae el precio desde el HTML de Financial Times (decimales con punto).
+ * @param {string} html
+ * @return {number|""}
+ */
+function _extractFtPrice(html) {
+  if (!html) return "";
+  var m = /Price\s*\(([A-Z]{3})\)\s*<\/span>\s*<span[^>]*>([0-9][0-9\.,]*)/i.exec(html);
+  if (m && m[2]) {
+    var n = Number(m[2].replace(/,/g, ""));
+    if (!isNaN(n)) return n;
+  }
+  m = /"last"\s*:\s*([0-9][0-9\.,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n2 = Number(m[1].replace(/,/g, ""));
+    if (!isNaN(n2)) return n2;
+  }
+  m = /Last\s+price[^0-9]*([0-9][0-9\.,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n3 = Number(m[1].replace(/,/g, ""));
+    if (!isNaN(n3)) return n3;
+  }
+  var mfallback = html.match(/[-+]?\d{1,3}(,\d{3})*(\.\d+)?/);
+  if (mfallback && mfallback[0]) {
+    var nfallback = Number(mfallback[0].replace(/,/g, ""));
+    if (!isNaN(nfallback)) return nfallback;
+  }
+  return "";
+}
+
+/**
+ * Extrae la divisa desde el HTML de Financial Times.
+ * @param {string} html
+ * @return {string}
+ */
+function _extractFtCurrency(html) {
+  if (!html) return "";
+  var m = /Price\s*\(([A-Z]{3})\)\s*<\/span>\s*<span[^>]*>[0-9]/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  m = /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  m = /data-currency\s*=\s*"([A-Z]{3})"/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  m = /[0-9][0-9\.,]*\s*([A-Z]{3})/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  return "";
+}
+
+/**
+ * Extrae un ticker o identificador desde el HTML.
+ * @param {string} html
+ * @return {string}
+ */
+function _extractFtTicker(html) {
+  if (!html) return "";
+  var m = /"ticker"\s*:\s*"([^"\n]+)"/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  m = /"symbol"\s*:\s*"([^"\n]+)"/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  return "";
+}
+
+/**
+ * Obtiene la cotización de un activo desde markets.ft.com.
+ * Soporta fondos (ISIN), ETFs y acciones.
+ *
+ * @param {string} identifier  ISIN o símbolo aceptado por Financial Times.
+ * @return {Object[][]} [[Nombre, Ticker, Precio, Divisa, "FINANCIALTIMES", FechaISO]]
+ */
+function getFinancialTimesQuote(identifier) {
+  if (!identifier) return [["","","","","FINANCIALTIMES", _isoNow()]];
+  var raw = String(identifier).trim();
+  var possibleIsin = _looksLikeIsin(raw);
+  var attempts = [];
+  if (possibleIsin) {
+    var currencies = ["EUR","USD","GBP"];
+    for (var i = 0; i < currencies.length; i++) {
+      attempts.push("https://markets.ft.com/data/funds/tearsheet/summary?s=" + possibleIsin + ":" + currencies[i]);
+    }
+  }
+  attempts.push("https://markets.ft.com/data/equities/tearsheet/summary?s=" + encodeURIComponent(raw));
+  attempts.push("https://markets.ft.com/data/etfs/tearsheet/summary?s=" + encodeURIComponent(raw));
+  if (!possibleIsin) {
+    attempts.push("https://markets.ft.com/data/funds/tearsheet/summary?s=" + encodeURIComponent(raw));
+  }
+
+  var name = "";
+  var price = "";
+  var currency = "";
+  var ticker = "";
+  var chosenUrl = "";
+
+  for (var j = 0; j < attempts.length; j++) {
+    var url = attempts[j];
+    var cacheKey = "ftq:" + url;
+    var cached = _getCache(cacheKey);
+    if (cached) return cached;
+
+    var res = _fetchFtHtml(url);
+    var html = (res && res.getResponseCode && res.getResponseCode() === 200) ? res.getContentText() : "";
+    if (!html) continue;
+
+    name = _extractFtName(html);
+    price = _extractFtPrice(html);
+    currency = _extractFtCurrency(html);
+    ticker = _extractFtTicker(html) || (possibleIsin ? possibleIsin : raw.toUpperCase());
+    chosenUrl = url;
+    if (price !== "" && currency !== "") break;
+  }
+
+  if (!ticker) ticker = possibleIsin ? possibleIsin : raw.toUpperCase();
+  var row = [[ name || "", ticker, price === "" ? "" : price, currency || "", "FINANCIALTIMES", _isoNow() ]];
+  if (chosenUrl) _setCache("ftq:" + chosenUrl, row, 60);
+  return row;
+}
+
 /** ===================== ENRUTADORES ===================== **/
 
 /**
  * Enrutador por fuente.
- * @param {string} source "YAHOO" | "COINGECKO" | "INVESTING" | "GOOGLEFINANCE" | "GOOGLE"
+ * @param {string} source "YAHOO" | "INVESTING" | "GOOGLEFINANCE" | "GOOGLE" | "QUEFONDOS" | "FINANCIALTIMES"
  * @param {string} identifier ticker / id / url / isin según la fuente
- * @param {string} currency  solo aplica a COINGECKO (p. ej. "EUR")
  */
-function resolveQuote(source, identifier, currency) {
+function resolveQuote(source, identifier) {
   source = String(source || "").toUpperCase();
   identifier = String(identifier || "");
-  currency = String(currency || "EUR").toUpperCase();
 
   if (source === "YAHOO")              return getYahooQuote(identifier);
-  if (source === "COINGECKO")          return getCryptoQuote(identifier, currency);
   if (source === "INVESTING")          return getInvestingQuote(identifier);
   if (source === "GOOGLEFINANCE" || source === "GOOGLE")
                                        return getGoogleFinanceQuote(identifier);
+  if (source === "QUEFONDOS")          return getQuefondosQuote(identifier);
+  if (source === "FINANCIALTIMES")     return getFinancialTimesQuote(identifier);
 
-  return [["","","","","", _isoNow()]];
+  // Fallback por defecto
+  return [["", "", "", "", "", _isoNow()]];
 }
 
 /**
- * Búsqueda por ISIN:
- *  - strictFunds = true → consulta Investing directamente (prioriza “funds”)
- *  - strictFunds = false/omitido → intenta Yahoo y, si no es usable, Investing con ranking
+ * Búsqueda por ISIN con estrategia de "fallback" entre fuentes:
+ *  - strictFunds = true → consulta Investing directamente (prioriza "funds")
+ *  - strictFunds = false/omitido → intenta Investing y, si falta información, recurre a
+ *    Quefondos, FinancialTimes y, solo para no-fondos, Yahoo y Google.
  *  - Si "hint" es una URL de Investing, se usa directamente (atajo para mapeos específicos)
  *
  * @param {string}  isin        Código ISIN (ej.: "FR00140081Y1")
@@ -555,48 +921,90 @@ function resolveQuote(source, identifier, currency) {
  * @param {boolean} strictFunds (opcional) TRUE para forzar Investing (ideal fondos UCITS)
  */
 function resolveQuoteByIsin(isin, hint, strictFunds) {
-  const code = _normalizeIsin(isin);
-  const hintStr = String(hint || "").trim();
-  const key  = "isinq:" + code + ":" + hintStr.toLowerCase().replace(/\s+/g,"-") + ":" + String(strictFunds||false);
-  const cached = _getCache(key);
+  var code = _normalizeIsin(isin);
+  var hintStr = String(hint || "").trim();
+  var key = "isinq:" + code + ":" + hintStr.toLowerCase().replace(/\s+/g, "-") + ":" + String(!!strictFunds);
+  var cached = _getCache(key);
   if (cached) return cached;
 
-  // Si la pista es una URL de Investing, úsala directamente
+  // Si se pasa una URL de investing explícita en 'hint', úsala directa.
   if (/^https?:\/\/[^ ]*investing\.com/i.test(hintStr)) {
-    const rowDirect = getInvestingQuote(hintStr);
+    var rowDirect = getInvestingQuote(hintStr);
     _setCache(key, rowDirect, 300);
     return rowDirect;
   }
 
+  // Si strictFunds=true: primero intentar vía Investing (fondos)
   if (strictFunds === true) {
-    const rowStrict = _resolveIsinViaInvesting_(code, hintStr);
+    var rowStrict = _resolveIsinViaInvesting_(code, hintStr);
+    // Si Investing no trae precio o divisa, intentamos Quefondos
+    if (!rowStrict || !rowStrict[0] || rowStrict[0][2] === "" || rowStrict[0][3] === "") {
+      var rowQF = getQuefondosQuote(code);
+      if (rowQF && rowQF[0] && rowQF[0][2] !== "" && rowQF[0][3] !== "") {
+        _setCache(key, rowQF, 300);
+        return rowQF;
+      }
+    }
+    // Si sigue sin datos válidos, recurrir a Morningstar
+    if (!rowStrict || !rowStrict[0] || rowStrict[0][2] === "" || rowStrict[0][3] === "") {
+      var rowMsF = getMorningstarQuote(code);
+      if (rowMsF && rowMsF[0] && rowMsF[0][2] !== "" && rowMsF[0][3] !== "") {
+        _setCache(key, rowMsF, 300);
+        return rowMsF;
+      }
+    }
     _setCache(key, rowStrict, 300);
     return rowStrict;
   }
+  // 1) INVESTING (con ranking por secciones)
+  var rowInv = _resolveIsinViaInvesting_(code, hintStr);
+  if (rowInv && rowInv[0] && rowInv[0][2] !== "" && rowInv[0][3] !== "") {
+    _setCache(key, rowInv, 300);
+    return rowInv;
+  }
 
-  // 1) Yahoo (acciones/ETF) — solo aceptar si trae precio+divisa
+  // 2) QUEFONDOS
+  var rowQ = getQuefondosQuote(code);
+  if (rowQ && rowQ[0] && rowQ[0][2] !== "" && rowQ[0][3] !== "") {
+    _setCache(key, rowQ, 300);
+    return rowQ;
+  }
+  // 3) FINANCIALTIMES
+  var rowFt = getFinancialTimesQuote(code);
+  if (rowFt && rowFt[0] && rowFt[0][2] !== "" && rowFt[0][3] !== "") {
+    _setCache(key, rowFt, 300);
+    return rowFt;
+  }
+  // 4) YAHOO (solo para no-fondos)
   try {
-    const y = _yahooSearch(code);
+    var y = _yahooSearch(code);
     if (y && y.quotes && y.quotes.length) {
-      const hit = y.quotes.find(q => {
-        const t = (q.quoteType || "").toUpperCase();
-        return ["FUTURE","OPTION","INDEX","CURRENCY"].indexOf(t) === -1;
+      var hit = y.quotes.find(function(q) {
+        var t = String(q.quoteType || "").toUpperCase();
+        return ["FUTURE", "OPTION", "INDEX", "CURRENCY"].indexOf(t) === -1;
       }) || y.quotes[0];
-
       if (hit && hit.symbol) {
-        const rowY = getYahooQuote(hit.symbol);
+        var rowY = getYahooQuote(hit.symbol);
         if (rowY && rowY[0] && rowY[0][2] !== "" && rowY[0][3] !== "") {
           _setCache(key, rowY, 300);
           return rowY;
         }
       }
     }
-  } catch (e) { /* continuar con Investing */ }
+  } catch (e) {
+    // Continuar con otras fuentes si Yahoo falla
+  }
 
-  // 2) Investing con ranking por sección
-  const row = _resolveIsinViaInvesting_(code, hintStr);
-  _setCache(key, row, 300);
-  return row;
+  // 5) GOOGLE FINANCE (como último recurso para no-fondos)
+  var rowG = getGoogleFinanceQuote(code);
+  if (rowG && rowG[0] && rowG[0][2] !== "" && rowG[0][3] !== "") {
+    _setCache(key, rowG, 300);
+    return rowG;
+  }
+
+  // Si ninguna fuente proporciona datos completos, devolver lo que haya en Investing
+  _setCache(key, rowInv, 300);
+  return rowInv;
 }
 
 /**
