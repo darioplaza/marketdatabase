@@ -778,15 +778,20 @@ function _extractFtName(html) {
  */
 function _extractFtPrice(html) {
   if (!html) return "";
-  var m = /"last"\s*:\s*([0-9][0-9\.,]*)/i.exec(html);
-  if (m && m[1]) {
-    var n = _parseEuropeanNumber(m[1]);
+  var m = /Price\s*\(([A-Z]{3})\)\s*<\/span>\s*<span[^>]*>([0-9][0-9\.,]*)/i.exec(html);
+  if (m && m[2]) {
+    var n = _parseEuropeanNumber(m[2]);
     if (!isNaN(n)) return n;
   }
-  m = /Last\s+price[^0-9]*([0-9][0-9\.,]*)/i.exec(html);
+  m = /"last"\s*:\s*([0-9][0-9\.,]*)/i.exec(html);
   if (m && m[1]) {
     var n2 = _parseEuropeanNumber(m[1]);
     if (!isNaN(n2)) return n2;
+  }
+  m = /Last\s+price[^0-9]*([0-9][0-9\.,]*)/i.exec(html);
+  if (m && m[1]) {
+    var n3 = _parseEuropeanNumber(m[1]);
+    if (!isNaN(n3)) return n3;
   }
   return _firstNumberLike(html);
 }
@@ -798,7 +803,9 @@ function _extractFtPrice(html) {
  */
 function _extractFtCurrency(html) {
   if (!html) return "";
-  var m = /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
+  var m = /Price\s*\(([A-Z]{3})\)\s*<\/span>\s*<span[^>]*>[0-9]/i.exec(html);
+  if (m && m[1]) return m[1].toUpperCase();
+  m = /"currency"\s*:\s*"([A-Z]{3})"/i.exec(html);
   if (m && m[1]) return m[1].toUpperCase();
   m = /data-currency\s*=\s*"([A-Z]{3})"/i.exec(html);
   if (m && m[1]) return m[1].toUpperCase();
