@@ -772,7 +772,7 @@ function _extractFtName(html) {
 }
 
 /**
- * Extrae el precio desde el HTML de Financial Times.
+ * Extrae el precio desde el HTML de Financial Times (decimales con punto).
  * @param {string} html
  * @return {number|""}
  */
@@ -780,20 +780,25 @@ function _extractFtPrice(html) {
   if (!html) return "";
   var m = /Price\s*\(([A-Z]{3})\)\s*<\/span>\s*<span[^>]*>([0-9][0-9\.,]*)/i.exec(html);
   if (m && m[2]) {
-    var n = _parseEuropeanNumber(m[2]);
+    var n = Number(m[2].replace(/,/g, ""));
     if (!isNaN(n)) return n;
   }
   m = /"last"\s*:\s*([0-9][0-9\.,]*)/i.exec(html);
   if (m && m[1]) {
-    var n2 = _parseEuropeanNumber(m[1]);
+    var n2 = Number(m[1].replace(/,/g, ""));
     if (!isNaN(n2)) return n2;
   }
   m = /Last\s+price[^0-9]*([0-9][0-9\.,]*)/i.exec(html);
   if (m && m[1]) {
-    var n3 = _parseEuropeanNumber(m[1]);
+    var n3 = Number(m[1].replace(/,/g, ""));
     if (!isNaN(n3)) return n3;
   }
-  return _firstNumberLike(html);
+  var mfallback = html.match(/[-+]?\d{1,3}(,\d{3})*(\.\d+)?/);
+  if (mfallback && mfallback[0]) {
+    var nfallback = Number(mfallback[0].replace(/,/g, ""));
+    if (!isNaN(nfallback)) return nfallback;
+  }
+  return "";
 }
 
 /**
